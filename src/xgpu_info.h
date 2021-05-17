@@ -9,19 +9,28 @@
 #endif
 
 #ifndef NSTATION
-#define NSTATION 256
+#define NSTATION 21
 #endif
 
 #ifndef NFREQUENCY
-#define NFREQUENCY 10
+#define NFREQUENCY 256
 #endif
 
 #ifndef NTIME
-#define NTIME 1024
+#define NTIME 4096
 #endif
 
 #ifndef NTIME_PIPE
-#define NTIME_PIPE 128
+#define NTIME_PIPE 512
+#endif
+
+// Unpack 4bit to 8bit on GPU
+//#define USE4BIT
+
+#ifdef DP4A
+#ifdef USE4BIT
+#error DP4A is not supported in 4bit mode
+#endif
 #endif
 
 // Ensure that NTIME_PIPE is a multiple of 4

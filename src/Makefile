@@ -2,7 +2,7 @@
 # (usually sizing for a specific project)
 -include Makefile.local
 
-CUDA_DIR ?= /usr/local/cuda
+CUDA_DIR ?= /usr/local/cuda-11.1.1
 ifneq ($(strip $(OSTYPE)),osx)
 CUDA_LIBDIR ?= $(CUDA_DIR)/lib64
 else
@@ -11,7 +11,8 @@ endif
 
 DEBUG ?= -O3
 TEXTURE_DIM ?= 1
-CUDA_ARCH ?= sm_30
+CUDA_ARCH ?= sm_75
+DP4A ?= no
 
 NVCC = $(CUDA_DIR)/bin/nvcc
 prefix ?= /usr/local
@@ -154,6 +155,7 @@ ifneq "$V" "1"
 endif
 
 CUDA_CORRELATOR_OBJS  = cuda_correlator.o
+HASHPIPE_CORRELATOR_OBJS = hashpipe_correlator.o
 
 XGPUINFO_OBJS  = xgpuinfo.o
 
@@ -169,10 +171,13 @@ LIBXGPU_OBJS += $(CUBE_OBJS)
 # Each object file has a corresponding dependency file
 DEPS = $(BINXGPU_OBJS:.o=.d) $(LIBXGPU_OBJS:.o=.d)
 
-all: cuda_correlator xgpuinfo $(LIBXGPU)
+all: cuda_correlator hashpipe_correlator xgpuinfo $(LIBXGPU)
 
 cuda_correlator: $(CUDA_CORRELATOR_OBJS) $(LIBXGPU)
 	$(NVCC) $(NVCCFLAGS) $(CUDA_CORRELATOR_OBJS) -o $@ $(LFLAGS) $(RPATH) -lxgpu -lrt
+
+hashpipe_correlator: $(HASHPIPE_CORRELATOR_OBJS) $(LIBXGPU)
+	$(NVCC) $(NVCCFLAGS) $(HASHPIPE_CORRELATOR_OBJS) -o $@ $(LFLAGS) $(RPATH) -lxgpu -lrt
 
 xgpuinfo: $(XGPUINFO_OBJS) $(LIBXGPU)
 	$(NVCC) $(NVCCFLAGS) $(XGPUINFO_OBJS) -o $@ $(LFLAGS) $(RPATH) -lxgpu

@@ -156,8 +156,8 @@ void xgpuCheckResult(Complex *gpu, Complex *cpu, int verbose, ComplexInput *arra
   for(i=0; i<NSTATION; i++){
     for (j=0; j<=i; j++) {
       for (pol1=0; pol1<NPOL; pol1++) {
-	for (pol2=0; pol2<NPOL; pol2++) {
-	  for(f=0; f<NFREQUENCY; f++){
+      for (pol2=0; pol2<NPOL; pol2++) {
+        for(f=0; f<NFREQUENCY; f++){
 	    int k = f*(NSTATION+1)*(NSTATION/2) + i*(i+1)/2 + j;
 	    int index = (k*NPOL+pol1)*NPOL+pol2;
 

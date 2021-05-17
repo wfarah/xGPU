@@ -5,6 +5,8 @@
 #include <limits.h>
 #include <unistd.h>
 
+#include "xgpu_info.h"
+
 #ifdef __MACH__
 #include <mach/mach_time.h>
 #define CLOCK_REALTIME 0
@@ -34,6 +36,22 @@ int clock_gettime(int clk_id, struct timespec *t){
   Output matrix has ordering
   [channel][station][station][polarization][polarization][complexity]
 */
+
+void cpuExpand4to8bit(void* array_h, ComplexInput* array_h_work, size_t s)
+{
+  size_t i = 0;
+  unsigned char* data_raw = (unsigned char *) array_h;
+  for (i=0; i<s; i++)
+  {
+    array_h_work[i].real = ((char) (data_raw[i] &0xf0)) >> 4;
+    array_h_work[i].imag = ((char) ((data_raw[i] &0xf0) << 4)) >> 4;
+    //fprintf(stderr, "%u %i %i\n", data_raw[i], 
+    //    array_h_work[i].real, array_h_work[i].imag);
+    //int t = getchar();
+  }
+  fprintf(stderr, "CPU: %u %i %i\n", data_raw[1017*2],  array_h_work[1017*2].real, array_h_work[1017*2].imag);
+
+}
 
 int main(int argc, char** argv) {
 
@@ -159,15 +177,26 @@ int main(int argc, char** argv) {
   }
 
 #ifndef DP4A
-  ComplexInput *array_h = context.array_h; // this is pinned memory
+#ifdef USE4BIT
+  ComplexInput *array_h = context.array_h;
+  ComplexInput *array_h_work = malloc(context.array_len*sizeof(ComplexInput));
+#else
+  ComplexInput *array_h_work = context.array_h; // this is pinned memory
+#endif
+
 #else
   ComplexInput *array_h = malloc(context.array_len*sizeof(ComplexInput));
 #endif
 
   Complex *cuda_matrix_h = context.matrix_h;
 
-  // create an array of complex noise
-  xgpuRandomComplex(array_h, xgpu_info.vecLength);
+// create an array of complex noise
+#ifdef USE4BIT
+  xgpuRandomComplex((ComplexInput*) array_h, xgpu_info.vecLength/2);
+  cpuExpand4to8bit(array_h, array_h_work, xgpu_info.vecLength);
+#else
+  xgpuRandomComplex(array_h_work, xgpu_info.vecLength);
+#endif
 
 #ifdef DP4A
   xgpuSwizzleInput(context.array_h, array_h);
@@ -185,7 +214,7 @@ int main(int argc, char** argv) {
   // Only call CPU X engine if dumping GPU X engine exactly once
   if(finalSyncOp == SYNCOP_DUMP && count*outer_count == 1) {
     printf("Calling CPU X-Engine\n");
-    xgpuOmpXengine(omp_matrix_h, array_h);
+    xgpuOmpXengine(omp_matrix_h, array_h_work);
   }
 #endif
 
@@ -249,7 +278,7 @@ int main(int argc, char** argv) {
   // Only compare CPU and GPU X engines if dumping GPU X engine exactly once
   if(finalSyncOp == SYNCOP_DUMP && count*outer_count == 1) {
     xgpuReorderMatrix(cuda_matrix_h);
-    xgpuCheckResult(cuda_matrix_h, omp_matrix_h, verbose, array_h);
+    xgpuCheckResult(cuda_matrix_h, omp_matrix_h, verbose, array_h_work);
   }
 
 #if 0

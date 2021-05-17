@@ -33,6 +33,9 @@ typedef struct XGPUInternalContextStruct {
 
   //memory pointers on the device
   ComplexInput *array_d[2];
+#ifdef USE4BIT
+  char *array_d_4bit;
+#endif
   Complex *matrix_d;
 
   // used for overlapping comms and compute
@@ -62,6 +65,13 @@ typedef struct XGPUInternalContextStruct {
   // Whether xgpuSetHostOutputBuffer has been called
   bool matrix_h_set;
   bool register_host_matrix;
+
+#ifdef USE4BIT
+  //For 4bit expansion
+  char2 * d_comp4_exp_LUT;
+  cudaTextureObject_t comp4_exp_tex_obj;
+#endif
+
 } XGPUInternalContext;
 
 #define TILE_HEIGHT 8
@@ -150,6 +160,43 @@ const char * xgpuVersionString()
 {
   return xgpu_version;
 }
+
+#ifdef USE4BIT
+__device__ cudaTextureObject_t d_comp4_exp_tex_obj;
+
+__global__ void complex4_expansion(char2 *lut){
+  lut[blockIdx.x] = make_char2( ((char)(blockIdx.x&0xf0))>>4,
+                                ((char)((blockIdx.x&0x0f)<<4)) >> 4);
+}
+
+//const unsigned int thread_count = NPOL; //2
+//grid.x = NSTATION; //21
+//grid.y = NFREQUENCY; //256
+//grid.z = NTIME; //1024
+
+__global__
+void expand4to8bit(void* array_d, char* array_d_4bit)
+{
+  char* comp8_dst = (char*) array_d;
+  char* comp4_src = array_d_4bit;
+
+
+  size_t count = threadIdx.x +
+      blockIdx.x*blockDim.x +
+      blockIdx.y*gridDim.x*blockDim.x +
+      blockIdx.z*gridDim.y*gridDim.x*blockDim.x;
+
+  char* comp8_dst_offset = comp8_dst + 2*count;
+
+  const char2 comp8 = tex1Dfetch<char2>(d_comp4_exp_tex_obj,
+          (unsigned char) (comp4_src[count]));
+
+  comp8_dst_offset[0] = comp8.x;
+  comp8_dst_offset[1] = comp8.y;
+  //if (count == 2034)
+  //    printf("GPU: %u %i %i--\n", (unsigned char) comp4_src[count], comp8.x, comp8.y);
+}
+#endif
 
 // Populate XGPUInfo structure with compile-time parameters.
 void xgpuInfo(XGPUInfo *pcxs)
@@ -244,12 +291,18 @@ int xgpuInit(XGPUContext *context, int device_flags)
   //allocate memory on device
   cudaMalloc((void **) &(internal->array_d[0]), vecLengthPipe*sizeof(ComplexInput));
   cudaMalloc((void **) &(internal->array_d[1]), vecLengthPipe*sizeof(ComplexInput));
+#ifdef USE4BIT
+  cudaMalloc((void **) &(internal->array_d_4bit), vecLengthPipe*sizeof(char));
+#endif
   cudaMalloc((void **) &(internal->matrix_d), matLength*sizeof(Complex));
   checkCudaError();
   
   //clear out any previous values
   cudaMemset(internal->array_d[0], '\0', vecLengthPipe*sizeof(ComplexInput));
   cudaMemset(internal->array_d[1], '\0', vecLengthPipe*sizeof(ComplexInput));
+#ifdef USE4BIT
+  cudaMemset(internal->array_d_4bit, '\0', vecLengthPipe*sizeof(char));
+#endif
   checkCudaError();
 
   // Clear device integration bufer
@@ -278,6 +331,38 @@ int xgpuInit(XGPUContext *context, int device_flags)
   internal->channelDesc = cudaCreateChannelDesc<char2>();
 #endif // DP4A
 #endif // FIXED_POINT
+
+
+#ifdef USE4BIT
+  cudaResourceDesc res_desc;
+  cudaTextureDesc tex_desc;
+
+  cudaMalloc(&internal->d_comp4_exp_LUT, 256*sizeof(char2));
+  checkCudaError();
+
+  complex4_expansion<<<256,1>>>(internal->d_comp4_exp_LUT);
+
+  memset(&res_desc, 0, sizeof(res_desc));
+  res_desc.resType = cudaResourceTypeLinear;
+  res_desc.res.linear.devPtr = internal->d_comp4_exp_LUT;
+  res_desc.res.linear.desc.f = cudaChannelFormatKindSigned;
+  res_desc.res.linear.desc.x = 8; // bits per channel
+  res_desc.res.linear.desc.y = 8; // bits per channel
+  res_desc.res.linear.sizeInBytes = 256*sizeof(char2);
+
+  memset(&tex_desc, 0, sizeof(tex_desc));
+  tex_desc.readMode = cudaReadModeElementType;
+
+  cudaCreateTextureObject(&internal->comp4_exp_tex_obj,
+          &res_desc, &tex_desc, NULL);
+  checkCudaError();
+
+  cudaMemcpyToSymbol(d_comp4_exp_tex_obj,
+          &internal->comp4_exp_tex_obj,
+          sizeof(cudaTextureObject_t));
+
+#endif
+
 
 #if NPULSAR > 0
   unsigned char timeIndex[PIPE_LENGTH*NFREQUENCY];
@@ -390,7 +475,11 @@ int xgpuSetHostInputBuffer(XGPUContext *context)
       uintptr_t ptr_in = (uintptr_t)context->array_h;
       uintptr_t ptr_aligned = ptr_in - (ptr_in % page_size);
       // Compute length starting with compile time requirement
+#ifdef USE4BIT
+      size_t length = context->array_len * sizeof(char);
+#else
       size_t length = context->array_len * sizeof(ComplexInput);
+#endif
       // TODO Verify that length is at least
       // "compiletime_info.vecLength*sizeof(ComplexInput)"
 
@@ -418,7 +507,11 @@ int xgpuSetHostInputBuffer(XGPUContext *context)
     // allocate host memory
     context->array_len = compiletime_info.vecLength;
     CLOCK_GETTIME(CLOCK_MONOTONIC, &a);
+#ifdef USE4BIT
+    cudaMallocHost(&(context->array_h), context->array_len*sizeof(char));
+#else
     cudaMallocHost(&(context->array_h), context->array_len*sizeof(ComplexInput));
+#endif
     CLOCK_GETTIME(CLOCK_MONOTONIC, &b);
     PRINT_ELAPASED("cudaMallocHost", ELAPSED_NS(a,b));
     internal->free_array_h = context->array_h;
@@ -531,6 +624,9 @@ void xgpuFree(XGPUContext *context)
 
     cudaFree(internal->array_d[1]);
     cudaFree(internal->array_d[0]);
+#ifdef USE4BIT
+    cudaFree(internal->array_d_4bit);
+#endif
     cudaFree(internal->matrix_d);
 
     free(internal);
@@ -556,6 +652,9 @@ int xgpuCudaXengine(XGPUContext *context, int syncOp)
   cudaSetDevice(internal->device);
 
   ComplexInput **array_d = internal->array_d;
+#ifdef USE4BIT
+  char *array_d_4bit = internal->array_d_4bit;
+#endif
   cudaStream_t *streams = internal->streams;
   cudaEvent_t *copyCompletion = internal->copyCompletion;
   cudaEvent_t *kernelCompletion = internal->kernelCompletion;
@@ -587,7 +686,26 @@ int xgpuCudaXengine(XGPUContext *context, int syncOp)
   // buffer 0.  This is a no-op unless previous call to xgpuCudaXengine() had
   // SYNCOP_NONE or SYNCOP_SYNC_TRANSFER.
   cudaStreamWaitEvent(streams[0], kernelCompletion[0], 0);
+#ifdef USE4BIT
+  // [NTIME][NFREQUENCY][NSTATION][NPOL]
+  dim3 grid;
+  //const unsigned int thread_count = NPOL;
+  //grid.x = NTIME;
+  //grid.y = NFREQUENCY;
+  //grid.z = NSTATION;
+
+  const unsigned int thread_count = NFREQUENCY;
+  grid.x = NTIME_PIPE;
+  grid.y = NPOL;
+  grid.z = NSTATION;
+
+
+  CUBE_ASYNC_COPY_CALL(array_d_4bit, array_hp, vecLengthPipe*sizeof(char), 
+          cudaMemcpyHostToDevice, streams[0]);
+  expand4to8bit<<<grid, thread_count, 0, streams[0]>>>(array_d[0], array_d_4bit);
+#else
   CUBE_ASYNC_COPY_CALL(array_d[0], array_hp, vecLengthPipe*sizeof(ComplexInput), cudaMemcpyHostToDevice, streams[0]);
+#endif
   cudaEventRecord(copyCompletion[0], streams[0]); // record the completion of the h2d transfer
   checkCudaError();
 
@@ -624,7 +742,13 @@ int xgpuCudaXengine(XGPUContext *context, int syncOp)
 
     // Download next chunk of input data
     cudaStreamWaitEvent(streams[0], kernelCompletion[p%2], 0); // only start the transfer once the kernel has completed
+#ifdef USE4BIT
+    CUBE_ASYNC_COPY_CALL(array_d_4bit, array_hp+p*(vecLengthPipe/2), //the "/2" is because array_hp is ComplexInput
+            vecLengthPipe*sizeof(char), cudaMemcpyHostToDevice, streams[0]);
+    expand4to8bit<<<grid, thread_count, 0, streams[0]>>>(array_load, array_d_4bit);
+#else
     CUBE_ASYNC_COPY_CALL(array_load, array_hp+p*vecLengthPipe, vecLengthPipe*sizeof(ComplexInput), cudaMemcpyHostToDevice, streams[0]);
+#endif
     cudaEventRecord(copyCompletion[p%2], streams[0]); // record the completion of the h2d transfer
     checkCudaError();
   }
