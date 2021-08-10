@@ -9,23 +9,23 @@
 #endif
 
 #ifndef NSTATION
-#define NSTATION 21
+#define NSTATION 32
 #endif
 
 #ifndef NFREQUENCY
-#define NFREQUENCY 256
+#define NFREQUENCY 384
 #endif
 
 #ifndef NTIME
-#define NTIME 4096
+#define NTIME 8736
 #endif
 
 #ifndef NTIME_PIPE
-#define NTIME_PIPE 512
+#define NTIME_PIPE 4368
 #endif
 
 // Unpack 4bit to 8bit on GPU
-//#define USE4BIT
+#define USE4BIT
 
 #ifdef DP4A
 #ifdef USE4BIT
